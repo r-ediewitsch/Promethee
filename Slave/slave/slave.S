@@ -9,6 +9,9 @@ main:
     SBI   DDRB, 5            
     SBI   DDRB, 4            
     
+    LDI   R17, 0xFF
+    OUT   DDRD, R17
+
   ; ADC Initialization
     LDI   R17, 1<<REFS0 | 1<<ADLAR
     STS   ADMUX, R17      ; AVcc, left-justified data, ADC0
@@ -52,10 +55,11 @@ read_heat:
   ; Start signal DHT11 
     SBI   DDRB, 1
     CBI   PORTB, 1
-    RCALL delay_20ms
+    RCALL delay_2ms
     SBI   PORTB, 1
 
   ; Wait for response
+    ;CALL  delay_timer_30us
     CBI   DDRB, 1
 wait_response_1:
     SBIC  PINB, 1
@@ -70,6 +74,7 @@ wait_response_3:
   ; Read 5 byte from DHT11
     RCALL DHT11_read_byte        ; byte 1: humidity integer
     MOV   R10, R18
+    
 
     RCALL DHT11_read_byte        ; byte 2: humidity decimal
     MOV   R11, R18
@@ -92,11 +97,18 @@ wait_response_3:
     CP    R16, R14             ; Compare with checksum
     BRNE  read_heat         ; If checksum doesn't add up, retake the data
 
-    ; === DATA VALID - proses suhu ===
-    ; OUT   PORTD, R12
+    ;=== DATA VALID - proses suhu ===
+    ;OUT   PORTD, R13
 
-    LDI   R21, 30
-    CP    R12, R21
+    SBRC  R12, 7          ; Check bit 7 of the high byte (R12). If it's 0 (clear/positive), skip the next instruction.
+    RJMP  turnOffh   
+
+    MOV   R17, R12
+    MOV   R16, R13
+    CALL  div_by_10
+    OUT   PORTD, R18
+
+    CPI   R18, 60
     BRLT  turnOffh
 
 turnOnh:
@@ -113,7 +125,7 @@ DHT11_read_byte:
 read_bit_loop:
     SBIS  PINB, 1
     RJMP  read_bit_loop
-    RCALL delay_timer_50us
+    RCALL delay_timer_70us
     SBIS  PINB, 1
     RJMP  read_bit_0
     SEC
@@ -128,7 +140,42 @@ wait_bit_end:
     BRNE  read_bit_loop
     RET
 
-delay_20ms:
+div_by_10:
+    CLR R18        ; Quotient low
+    CLR R19        ; Quotient high
+    CLR R20        ; Remainder
+    LDI R21, 16    ; 16 bits to process
+
+div10_loop:
+    ; Shift left dividend and remainder
+    LSL R16
+    ROL R17
+    ROL R20
+
+    ; Try subtracting 10
+    MOV R22, R20
+    SUBI R20, 10
+    BRCS div10_skip
+
+    ; Success: store 1 in quotient
+    SEC
+    ROL R18
+    ROL R19
+    RJMP div10_next
+
+div10_skip:
+    ; Restore remainder, store 0 in quotient
+    MOV R20, R22
+    CLC
+    ROL R18
+    ROL R19
+
+div10_next:
+    DEC R21
+    BRNE div10_loop
+    RET
+
+delay_2ms:
     LDI   R21, 255
 delay_20ms_loop_1:
     LDI   R22, 210
@@ -158,7 +205,7 @@ delay_2s_loop_3:
     BRNE  delay_2s_loop_1
     RET
 
-delay_timer_50us:
+delay_timer_70us:
     CLR   R20
     OUT   TCNT0, R20
     LDI   R20, 100
@@ -169,6 +216,23 @@ wait_timer_flag:
     IN    R20, TIFR0
     SBRS  R20, OCF0A
     RJMP  wait_timer_flag
+    CLR   R20
+    OUT   TCCR0B, R20
+    LDI   R20, (1<<OCF0A)
+    OUT   TIFR0, R20
+    RET
+
+delay_timer_30us:
+    CLR   R20
+    OUT   TCNT0, R20
+    LDI   R20, 60         ; 30us for 1MHz
+    OUT   OCR0A, R20
+    LDI   R20, 0b00001010
+    OUT   TCCR0B, R20
+wait_30us_flag:
+    IN    R20, TIFR0
+    SBRS  R20, OCF0A
+    RJMP  wait_30us_flag
     CLR   R20
     OUT   TCCR0B, R20
     LDI   R20, (1<<OCF0A)
