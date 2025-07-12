@@ -1,6 +1,9 @@
 #define __SFR_OFFSET 0x00
 #include "avr/io.h" 
 
+.equ smoke_rd, 0x05
+.equ temp_rd, 0x06
+
 .global main
 
 main:
@@ -12,6 +15,12 @@ main:
     LDI   R17, 0xFF
     OUT   DDRD, R17
 
+  ; SPI Slave Initialization
+    LDI   R16, 1<<PB4       ; Set MISO (PB4) as an output
+    OUT   DDRB, R16
+    LDI   R16, 1<<SPE       ; Enable SPI in slave mode
+    OUT   SPCR, R16
+
   ; ADC Initialization
     LDI   R17, 1<<REFS0 | 1<<ADLAR
     STS   ADMUX, R17      ; AVcc, left-justified data, ADC0
@@ -19,8 +28,31 @@ main:
     STS   ADCSRA, R17     ; enable ADC, prescaler CLK/128
 
 main_loop:
+    wait_for_receive:
+    IN    R25, SPSR
+    SBRS  R25, SPIF
+    RJMP  wait_for_receive
+
+    ; 2. Read the received byte from the data register
+    IN    R24, SPDR
+
+    ; 3. Check if the received byte is the command we are waiting for
+    CPI   R24, smoke_rd
+    BREQ  smoke_read
+
+    CPI   R24, temp_rd
+    BREQ  temp_read
+
+    RJMP  main_loop
+  
+smoke_read:
     CALL  read_smoke
+    OUT   SPDR, R21
+    RJMP  main_loop
+
+temp_read:
     CALL  read_heat
+    OUT   SPDR, R18
     RJMP  main_loop
 
 read_smoke:
@@ -36,22 +68,9 @@ wait_ADC:
     STS   ADCSRA, R17     
 
     LDS   R21, ADCH       ; get high-byte result from ADCH
-
-    CPI   R21, 100        ; compare high byte with 100 (400 ppm)
-    BRSH  turnOn          ; jump to c2 if the high 2-bit = 0
-    JMP   turnOff         ; turn off the LED if the high 2-bit > 0 
-
-turnOn:
-    SBI PORTB, 5          ; set PORTB5 to turn on the LED
-    RET
-
-turnOff:
-    CBI PORTB, 5          ; clear PORTB5 to turn off the LED
     RET
 
 read_heat:
-    RCALL delay_2s
-
   ; Start signal DHT11 
     SBI   DDRB, 1
     CBI   PORTB, 1
@@ -72,17 +91,16 @@ wait_response_3:
     RJMP  wait_response_3
 
   ; Read 5 byte from DHT11
-    RCALL DHT11_read_byte        ; byte 1: humidity integer
+    RCALL DHT11_read_byte        ; byte 1: humidity high byte
     MOV   R10, R18
-    
 
-    RCALL DHT11_read_byte        ; byte 2: humidity decimal
+    RCALL DHT11_read_byte        ; byte 2: humidity low byte
     MOV   R11, R18
 
-    RCALL DHT11_read_byte        ; byte 3: temperature integer
+    RCALL DHT11_read_byte        ; byte 3: temperature high byte
     MOV   R12, R18
 
-    RCALL DHT11_read_byte        ; byte 4: temperature decimal
+    RCALL DHT11_read_byte        ; byte 4: temperature low byte
     MOV   R13, R18
 
     RCALL DHT11_read_byte        ; byte 5: checksum
@@ -95,29 +113,26 @@ wait_response_3:
     ADD   R16, R13             ; + T_dec
 
     CP    R16, R14             ; Compare with checksum
-    BRNE  read_heat         ; If checksum doesn't add up, retake the data
+    BRNE  read_heat            ; If checksum doesn't add up, retake the data
 
     ;=== DATA VALID - proses suhu ===
-    ;OUT   PORTD, R13
-
-    SBRC  R12, 7          ; Check bit 7 of the high byte (R12). If it's 0 (clear/positive), skip the next instruction.
-    RJMP  turnOffh   
 
     MOV   R17, R12
     MOV   R16, R13
+
+    TST   R17
+    BRMI  is_negative
+
     CALL  div_by_10
     OUT   PORTD, R18
-
-    CPI   R18, 60
-    BRLT  turnOffh
-
-turnOnh:
-    SBI PORTB, 4          ; set PORTB5 to turn on the LED
     RET
 
-turnOffh:
-    CBI PORTB, 4          ; set PORTB5 to turn on the LED
-    RET
+is_negative:
+    ANDI  R17, 0x7F
+    CALL  div_by_10
+    ORI   R18, 0x80
+    OUT   PORTD, R18
+    RET  
 
 DHT11_read_byte:
     LDI   R17, 8
@@ -125,7 +140,7 @@ DHT11_read_byte:
 read_bit_loop:
     SBIS  PINB, 1
     RJMP  read_bit_loop
-    RCALL delay_timer_70us
+    RCALL delay_timer_50us
     SBIS  PINB, 1
     RJMP  read_bit_0
     SEC
@@ -205,7 +220,7 @@ delay_2s_loop_3:
     BRNE  delay_2s_loop_1
     RET
 
-delay_timer_70us:
+delay_timer_50us:
     CLR   R20
     OUT   TCNT0, R20
     LDI   R20, 100
