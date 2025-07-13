@@ -8,12 +8,27 @@
 
 .global INT0_vect
 INT0_vect:
-  ; Ngko sek
+    SBI   PORTB, 0
+    SBR   R27, 0
+    CALL  print_emergency_alert
+    RETI
+
+.global INT1_vect
+INT1_vect:
+    SBI   PORTB, 0
+    SBR   R27, 0
+    CALL  print_flame_alert
     RETI
 
 .global main
 
 main:
+  ; Stack Pointer Initialization
+    LDI R16, hi8(RAMEND)
+    OUT SPH, R16
+    LDI R16, lo8(RAMEND)
+    OUT SPL, R16
+
   ; I/O Initialization
     LDI  R16, 0xFF
     OUT  DDRD, R16
@@ -48,39 +63,139 @@ main:
 
     SEI                       ; Enable global interrupts
 
+  ; I2C Initialization
+    LDI   R16, 0
+    STS   TWSR, R28       ; Prescaler = 1 (TWPS = 00)
+    LDI   R16, 72         ; TWBR = 72 → SCL ≈ 100 kHz
+    STS   TWBR, R28
+
+  ; LCD Display Initialization
+    RCALL I2C_start         ; memulai pengiriman I2C
+    LDI   R29, 0x7C         ; address LCD = 0x7C
+    RCALL I2C_write
+
+    CLR   R21
+    CLR   R22
+    LDI   R27, 0x80         ; RS = 0
+    LDI   R16, 0x28         ; command untuk LCD 2 lines, 5x7 matrix
+    RCALL cmd_write      ; mengirimkan command
+    LDI   R16, 0x0C         ; command untuk disp ON, cursor OFF
+    RCALL cmd_write       ; mengirimkan command
+    LDI   R16, 0x01         ; command untuk clear LCD
+    RCALL cmd_write      ; mengirimkan command
+    CLR   R27
+    LDI   R16, 0x06         ; command untuk shift cursor right
+    RCALL cmd_write       ; mengirimkan command
+    RCALL I2C_stop          ; menghentikan pengiriman I2C
+
+  ; Flag Comparator
+    LDI   R16, 0x01
+    MOV   R3, R16
+
 main_loop:
     CALL smoke_spi_read
     MOV R8, R16
-    CALL print_smoke
-    
     CALL temp_spi_read
     MOV R9, R16
+
+    CALL print_smoke
     CALL print_temp
     ;OUT PORTD, R19
 
-    CALL delay_one_sec
     CALL handle_alarm
     RJMP main_loop
 
 handle_alarm:
-    CPI  R18, 100
-    BRSH tc
-    RJMP ret
-tc: ANDI  R19, 0x7F
-    CPI  R19, 60
-    BRLO ret
-    SBI  PORTB, 0
-ret:RET
+    ;PUSH  R27
+
+    ; Copy smoke (R8) and temp (R9) into upper registers
+    CP    R4, R3
+    BREQ  alarm_done
+
+    MOV   R18, R8
+    MOV   R19, R9
+
+    ; Check if smoke >= 100
+    CPI   R18, 100
+    BRLO  check_temp_only
+
+    ; Smoke >= 60
+    ANDI  R19, 0x7F         ; Remove sign bit from temp
+    CPI   R19, 60
+    BRLO  smoke_only_msg
+
+    ; Smoke high + Temp high
+    SBI   PORTB, 0
+    MOV   R4, R3
+    CALL  print_fire_alert
+    RJMP  alarm_done
+
+smoke_only_msg:
+    CALL  print_smoke_notice
+    RJMP  alarm_done
+
+check_temp_only:
+    ANDI  R19, 0x7F         ; Remove sign bit from temp
+    CPI   R19, 60
+    BRLO  print_safe_msg
+
+    CALL  print_temp_notice
+    RJMP  alarm_done
+
+print_safe_msg:
+    CALL  print_safe_message
+
+alarm_done:
+    ;POP   R27
+    RET
     
+print_smoke_notice:
+    CALL lcd_clear
+    LDI  R30, lo8(smoke_notice)
+    LDI  R31, hi8(smoke_notice)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
 
-turnOff:
-    CBI  PORTB, 0
-    RJMP main_loop
+print_temp_notice:
+    CALL lcd_clear
+    LDI  R30, lo8(temp_notice)
+    LDI  R31, hi8(temp_notice)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
 
-turnOn:
-    SBI  PORTB, 0
-    RJMP main_loop
+print_fire_alert:
+    CALL lcd_clear
+    LDI  R30, lo8(fire_alert)
+    LDI  R31, hi8(fire_alert)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
 
+print_flame_alert:
+    CALL lcd_clear
+    LDI  R30, lo8(flame_warning)
+    LDI  R31, hi8(flame_warning)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
+
+print_emergency_alert:
+    CALL lcd_clear
+    LDI  R30, lo8(emergency_warning)
+    LDI  R31, hi8(emergency_warning)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
+
+print_safe_message:
+    CALL lcd_clear
+    LDI  R30, lo8(safe)
+    LDI  R31, hi8(safe)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
 
 smoke_spi_read:
     CBI  PORTB, 2  ; Pull CS LOW
@@ -88,7 +203,7 @@ smoke_spi_read:
     LDI  R16, smoke_rd ; --- Send the SMOKE command ---
     CALL spi_transmit
 
-    CALL delay_one_sec
+    CALL delay_timer_1ms
 
     LDI  R16, wait_rd     ; --- Send dummy byte to get the data ---
     CALL spi_transmit
@@ -103,7 +218,7 @@ temp_spi_read:
     LDI  R16, temp_rd ; --- Send the SMOKE command ---
     CALL spi_transmit
 
-    CALL delay_one_sec
+    CALL delay_50ms
 
     LDI  R16, wait_rd     ; --- Send dummy byte to get the data ---
     CALL spi_transmit
@@ -119,6 +234,83 @@ wait_loop:
     SBRS R17, SPIF
     RJMP wait_loop
     IN   R16, SPDR ; Read SPDR to clear flag and get received byte
+    RET
+
+I2C_start:
+    LDI   R28, 1<<TWINT | 1<<TWSTA | 1<<TWEN
+    STS   TWCR, R28       ;transmit START condition
+wt1:LDS   R28, TWCR
+    SBRS  R28, TWINT      ;TWI interrupt = 1?
+    RJMP  wt1             ;no, wait for end of transmission
+    RET
+
+I2C_write:
+    STS   TWDR, R29       ;copy SLA+W into data register
+    LDI   R28, 1<<TWINT | 1<<TWEN
+    STS   TWCR, R28       ;transmit SLA+W
+wt2:LDS   R28, TWCR
+    SBRS  R28, TWINT
+    RJMP  wt2             ;wait for end of transmission
+    RET
+
+I2C_stop:
+    LDI   R28, 1<<TWINT | 1<<TWSTO | 1<<TWEN
+    STS   TWCR, R28       ;transmit STOP condition
+    RET
+
+cmd_write:
+  MOV   R29, R27
+  RCALL I2C_write         ; mengirimkan control byte
+  RCALL delay_timer_50us         ; mikrosekon delay
+  MOV   R29, R16
+  RCALL I2C_write         ; mengirimkan data byte
+  RCALL delay_timer_50us          ; mikrosekon delay
+  RET
+
+data_write:
+  MOV   R29, R27
+  RCALL I2C_write         ; mengirimkan control byte
+  RCALL delay_timer_50us          ; mikrosekon delay
+  MOV   R29, R16
+  RCALL I2C_write         ; mengirimkan data byte
+  RCALL delay_timer_50us          ; mikrosekon delay
+  RET
+
+disp_msg:
+    RCALL I2C_start           ; memulai pengiriman I2C
+    LDI R29, 0x7C             ; address LCD = 0x4E
+    RCALL I2C_write
+agl:LPM   R16, Z+             ; memuat char dari string pada R16
+    CPI   R16, 13
+    BREQ  newl
+    CPI   R16, 0              ; memeriksa apakah R16=0 (akhir dari string)
+    BREQ  exl                 ; exit jika R16=0
+  
+    CLR   R21
+    LDI   R22, 1
+    RCALL delay_timer_1ms 
+    LDI   R27, 0xC0   
+    RCALL data_write
+  
+    RJMP  agl                ; loop untuk mendapatkan char selanjutnya
+  
+exl:RCALL I2C_stop            ; menghentikan pengiriman I2C
+    RET
+newl: 
+    LDI   R27, 0x80   
+    LDI   R16, 0xC0         ; command untuk memindahkan cursor menuju baris kedua
+    RCALL cmd_write       ; mengirimkan command
+    RJMP agl
+
+lcd_clear:
+    CALL  I2C_start
+    LDI   R29, 0x7C
+    CALL  I2C_write
+    CLR   R27
+    LDI   R16, 0x01           ; Clear display command
+    CALL  cmd_write
+    CALL  delay_timer_5ms           ; This command needs a longer delay
+    CALL  I2C_stop
     RET
 
 div_16bit:
@@ -280,7 +472,7 @@ pos:CLR   R17
     
     ; The quotient (tens digit) is now in R18
     MOV   R16, R20
-    OUT   PORTC, R20
+    ;OUT   PORTC, R20
 
     CPI   R20, 0            ; Check if the 16-bit quotient is zero
     BREQ  stt 
@@ -350,7 +542,9 @@ l1: LDS   R17, UCSR0A
     RJMP  agn                 ; loop for the next char
 ext:RET
 
-
+delay_50ms:
+    LDI  R21, 5
+    JMP  delay_loop_inner
 delay_one_sec:
     LDI  R21, 100
 delay_loop_inner:
@@ -363,6 +557,23 @@ delay_inner:
     BRNE delay_inner
     DEC  R21
     BRNE delay_loop_inner
+    RET
+
+delay_timer_50us:
+    CLR   R20
+    OUT   TCNT0, R20
+    LDI   R20, 100
+    OUT   OCR0A, R20
+    LDI   R20, 0b00001010
+    OUT   TCCR0B, R20
+wait_timer_flag:
+    IN    R20, TIFR0
+    SBRS  R20, OCF0A
+    RJMP  wait_timer_flag
+    CLR   R20
+    OUT   TCCR0B, R20
+    LDI   R20, (1<<OCF0A)
+    OUT   TIFR0, R20
     RET
 
 delay_timer_30us:
@@ -382,6 +593,35 @@ wait_30us_flag:
     OUT   TIFR0, R20
     RET
 
+delay_timer_5ms:
+    LDI   R24, 50       ; Set loop counter to 10 for 10 * 100us = 1000us
+    RJMP   delay_1ms_loop
+
+delay_timer_1ms:
+    LDI   R24, 10       ; Set loop counter to 10 for 10 * 100us = 1000us
+
+delay_1ms_loop:
+    ; --- Start of 100us delay logic ---
+    CLR   R20
+    OUT   TCNT0, R20
+    LDI   R20, 200      ; 200 ticks * 0.5us/tick = 100us (assuming 16MHz clock and clk/8 prescaler)
+    OUT   OCR0A, R20
+    LDI   R20, 0b00000010 ; Start timer with clk/8 prescaler
+    OUT   TCCR0B, R20
+wait_100us_flag:
+    IN    R20, TIFR0
+    SBRS  R20, OCF0A
+    RJMP  wait_100us_flag
+    LDI   R20, (1<<OCF0A) ; Clear the flag by writing a 1 to it
+    OUT   TIFR0, R20
+    CLR   R20             ; Stop the timer
+    OUT   TCCR0B, R20
+    ; --- End of 100us delay logic ---
+
+    DEC   R24
+    BRNE  delay_1ms_loop
+    RET
+
 temp_msg:
     .ascii "Temperature: "
     .byte 10,0
@@ -389,3 +629,38 @@ temp_msg:
 smoke_msg:
     .ascii "Smoke (ppm): "
     .byte 10,0
+
+flame_warning:
+    .ascii "WARNING!"
+    .byte 13
+    .ascii "FLAME DETECTED"
+    .byte 0
+
+emergency_warning:
+    .ascii "WARNING!"
+    .byte 13
+    .ascii "EMERGENCY BUTTON"
+    .byte 0
+
+fire_alert:
+    .ascii "ALERT!"
+    .byte 13
+    .ascii "FIRE+SMOKE HIGH"
+    .byte 0
+
+smoke_notice:
+    .ascii "NOTICE!"
+    .byte 13
+    .ascii "HIGH SMOKE"
+    .byte 0
+
+temp_notice:
+    .ascii "NOTICE!"
+    .byte 13
+    .ascii "HIGH TEMP"
+    .byte 0
+
+safe:
+    .ascii "SAFE CONDITION"
+    .byte 13,0
+

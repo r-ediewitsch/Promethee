@@ -78,7 +78,6 @@ read_heat:
     SBI   PORTB, 1
 
   ; Wait for response
-    ;CALL  delay_timer_30us
     CBI   DDRB, 1
 wait_response_1:
     SBIC  PINB, 1
@@ -203,21 +202,6 @@ delay_20ms_loop_3:
     BRNE  delay_20ms_loop_2
     DEC   R21
     BRNE  delay_20ms_loop_1
-    RET
-
-delay_2s:
-    LDI   R21, 255
-delay_2s_loop_1:
-    LDI   R22, 255
-delay_2s_loop_2:
-    LDI   R23, 164
-delay_2s_loop_3:
-    DEC   R23
-    BRNE  delay_2s_loop_3
-    DEC   R22
-    BRNE  delay_2s_loop_2
-    DEC   R21
-    BRNE  delay_2s_loop_1
     RET
 
 delay_timer_50us:
