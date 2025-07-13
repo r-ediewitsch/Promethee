@@ -9,14 +9,14 @@
 .global INT0_vect
 INT0_vect:
     SBI   PORTB, 0
-    SBR   R27, 0
+    MOV   R4, R3
     CALL  print_emergency_alert
     RETI
 
 .global INT1_vect
 INT1_vect:
     SBI   PORTB, 0
-    SBR   R27, 0
+    MOV   R4, R3
     CALL  print_flame_alert
     RETI
 
@@ -31,8 +31,13 @@ main:
 
   ; I/O Initialization
     LDI  R16, 0xFF
-    OUT  DDRD, R16
     OUT  DDRC, R16
+
+    LDI  R16, 0x1C
+    OUT  DDRD, R16
+    LDI  R16, 0x14
+    OUT  PORTD, R16
+
     SBI  DDRB, 0
 
   ; SPI Master Initialization
@@ -93,6 +98,9 @@ main:
     MOV   R3, R16
 
 main_loop:
+    SBIS  PIND, 4
+    CALL handle_reset
+
     CALL smoke_spi_read
     MOV R8, R16
     CALL temp_spi_read
@@ -100,14 +108,38 @@ main_loop:
 
     CALL print_smoke
     CALL print_temp
-    ;OUT PORTD, R19
+    
+    SBRC R4, 0
+    CALL delay_one_sec
 
     CALL handle_alarm
     RJMP main_loop
 
-handle_alarm:
-    ;PUSH  R27
+handle_reset:
+    SBIS  PORTB, 0
+    RJMP  reset_done
+    SBIC  PIND, 3
+    RJMP  reset_done
 
+    MOV   R18, R8
+    MOV   R19, R9
+
+    CPI   R18, 100
+    BRSH  reset_done
+
+    ANDI  R19, 0x7F
+    CPI   R19, 60
+    BRSH  reset_done
+
+    CALL  print_reset_message
+    CBI   PORTB, 0
+    CLR   R4
+
+reset_done:
+    RET
+    
+
+handle_alarm:
     ; Copy smoke (R8) and temp (R9) into upper registers
     CP    R4, R3
     BREQ  alarm_done
@@ -130,10 +162,6 @@ handle_alarm:
     CALL  print_fire_alert
     RJMP  alarm_done
 
-smoke_only_msg:
-    CALL  print_smoke_notice
-    RJMP  alarm_done
-
 check_temp_only:
     ANDI  R19, 0x7F         ; Remove sign bit from temp
     CPI   R19, 60
@@ -142,11 +170,14 @@ check_temp_only:
     CALL  print_temp_notice
     RJMP  alarm_done
 
+smoke_only_msg:
+    CALL  print_smoke_notice
+    RJMP  alarm_done
+
 print_safe_msg:
     CALL  print_safe_message
 
 alarm_done:
-    ;POP   R27
     RET
     
 print_smoke_notice:
@@ -193,6 +224,14 @@ print_safe_message:
     CALL lcd_clear
     LDI  R30, lo8(safe)
     LDI  R31, hi8(safe)
+    CALL disp_msg
+    CALL delay_one_sec
+    RET
+
+print_reset_message:
+    CALL lcd_clear
+    LDI  R30, lo8(reset_msg)
+    LDI  R31, hi8(reset_msg)
     CALL disp_msg
     CALL delay_one_sec
     RET
@@ -660,7 +699,12 @@ temp_notice:
     .ascii "HIGH TEMP"
     .byte 0
 
+reset_msg:
+    .ascii "SAFE CONDITION"
+    .byte 13
+    .ascii "RESETTING..."
+    .byte 0
+
 safe:
     .ascii "SAFE CONDITION"
     .byte 13,0
-
