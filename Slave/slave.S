@@ -1,3 +1,6 @@
+; Muhammad Riyan Satrio Wibowo (RE)
+; Prométhée - Fire Alarm
+
 #define __SFR_OFFSET 0x00
 #include "avr/io.h" 
 

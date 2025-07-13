@@ -1,3 +1,6 @@
+; Muhammad Riyan Satrio Wibowo (RE)
+; Prométhée - Fire Alarm
+
 #define __SFR_OFFSET 0x00
 #include "avr/io.h"
 #include "avr/interrupt.h"
@@ -664,7 +667,7 @@ wait_30us_flag:
     RET
 
 delay_timer_5ms:
-    LDI   R24, 50               ; Set loop counter to 10 for 50*100us = 000us
+    LDI   R24, 50               ; Set loop counter to 10 for 50*100us = 5000us
     RJMP   delay_1ms_loop
 delay_timer_1ms:
     LDI   R24, 10               ; Set loop counter to 10 for 10*100us = 1000us
